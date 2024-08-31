@@ -2,10 +2,16 @@ export class NostrClient {
   constructor(url) {
     this.url = url;
     this.ws = null;
+    this.eventListeners = {};
+    this.connectionPromise = null;
   }
 
   async connect() {
-    return new Promise((resolve, reject) => {
+    if (this.connectionPromise) {
+      return this.connectionPromise;
+    }
+
+    this.connectionPromise = new Promise((resolve, reject) => {
       this.ws = new WebSocket(this.url);
       this.ws.onopen = () => {
         console.log("WebSocket connected");
@@ -16,6 +22,14 @@ export class NostrClient {
         reject(error);
       };
     });
+
+    return this.connectionPromise;
+  }
+
+  async ensureConnected() {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      await this.connect();
+    }
   }
 
   async fetchProfile(pubkey) {
@@ -184,5 +198,73 @@ export class NostrClient {
         reject(new Error("Timeout fetching user's high scores"));
       }, 5000);
     });
+  }
+
+  async createRoom(creatorPubkey) {
+    await this.ensureConnected();
+    const roomId = Math.random().toString(36).substring(7);
+    const event = {
+      kind: 30000,
+      tags: [
+        ['e', roomId],
+        ['p', creatorPubkey],
+        ['status', 'open']
+      ],
+      content: JSON.stringify({ type: 'room_created', roomId })
+    };
+    await this.publishEvent(event);
+    return roomId;
+  }
+
+  async joinRoom(roomId, playerPubkey) {
+    await this.ensureConnected();
+    const event = {
+      kind: 30001,
+      tags: [
+        ['e', roomId],
+        ['p', playerPubkey]
+      ],
+      content: JSON.stringify({ type: 'room_joined', roomId })
+    };
+    await this.publishEvent(event);
+  }
+
+  async publishEvent(event) {
+    await this.ensureConnected();
+    event.created_at = Math.floor(Date.now() / 1000);
+    event.pubkey = await window.nostr.getPublicKey();
+    const signedEvent = await window.nostr.signEvent(event);
+    this.ws.send(JSON.stringify(['EVENT', signedEvent]));
+  }
+  
+  handleEvent(event) {
+    if (event.kind === 30000) {
+      const content = JSON.parse(event.content);
+      if (content.type === 'room_created') {
+        this.emit('roomCreated', content.roomId);
+      }
+    } else if (event.kind === 30001) {
+      const content = JSON.parse(event.content);
+      if (content.type === 'room_joined') {
+        this.emit('roomJoined', content.roomId);
+      }
+    }
+    // Add more event handling as needed
+  }
+
+  on(eventName, callback) {
+    if (!this.eventListeners) {
+      this.eventListeners = {};
+    }
+    if (!this.eventListeners[eventName]) {
+      this.eventListeners[eventName] = [];
+    }
+    this.eventListeners[eventName].push(callback);
+  }
+
+  emit(eventName, data) {
+    if (this.eventListeners && this.eventListeners[eventName]) {
+      this.eventListeners[eventName].forEach(callback => callback(data));
+    }
   }
 }

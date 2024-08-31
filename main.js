@@ -1,12 +1,18 @@
 import { CONFIG } from "./config.js";
 import { NostrClient } from "./nostrUtils.js";
 import { SnakeGame } from "./game.js";
+import { Lobby } from './lobby.js';
+import { MultiplayerGame } from './multiplayerGame.js';
 
 document.addEventListener("DOMContentLoaded", () => {
   // Initialization
   console.log("DOM fully loaded");
   const nostrClient = new NostrClient(CONFIG.WEBSOCKET_URL);
-  const game = new SnakeGame("game-canvas");
+  (async () => {
+    await nostrClient.connect();
+  })();
+  let game = new SnakeGame("game-canvas");
+  let lobby = null;
   let isOpen = false;
   let npub = null;
   let highscore = localStorage.getItem("highscore") || 0;
@@ -33,12 +39,22 @@ document.addEventListener("DOMContentLoaded", () => {
     closeSettingsBtn: document.querySelector(".close-btn"),
     emojiListContainer: document.querySelector(".emoji-list"),
     feedback: document.getElementById("feedback"),
+    actionButtons: document.querySelector(".action-buttons"),
+    lobbyContainer: document.getElementById("lobby-container"),
   };
 
   // Initial UI Setup
   elements.restartButton.style.display = "none";
   elements.settingsButton.style.display = "none";
   updateHighscoreDisplay();
+
+  // Create and add multiplayer button
+  const multiplayerButton = document.createElement('button');
+  multiplayerButton.textContent = 'Multiplayer';
+  multiplayerButton.classList.add('btn', 'btn-dark', 'me-2');
+  multiplayerButton.style.display = 'none';
+  multiplayerButton.addEventListener('click', initMultiplayer);
+  elements.actionButtons.appendChild(multiplayerButton);
 
   // Event Listeners
   elements.loginButton.addEventListener("click", handleLogin);
@@ -62,19 +78,23 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   // Game-related functions
-  game.onGameOver = async (score) => {
-    if (score > highscore) {
-      highscore = score;
-      localStorage.setItem("highscore", highscore);
-      updateHighscoreDisplay();
-    }
-    elements.finalScoreElement.textContent = `Final Score: ${score}`;
-    elements.gameoverScreen.style.display = "flex";
-  };
+  function setupGameCallbacks() {
+    game.onGameOver = async (score) => {
+      if (score > highscore) {
+        highscore = score;
+        localStorage.setItem("highscore", highscore);
+        updateHighscoreDisplay();
+      }
+      elements.finalScoreElement.textContent = `Final Score: ${score}`;
+      elements.gameoverScreen.style.display = "flex";
+    };
 
-  game.onScoreUpdate = (score) => {
-    elements.scoreElement.textContent = `Score: ${score}`;
-  };
+    game.onScoreUpdate = (score) => {
+      elements.scoreElement.textContent = `Score: ${score}`;
+    };
+  }
+
+  setupGameCallbacks();
 
   // UI-related functions
   async function handleLogin() {
@@ -83,22 +103,39 @@ document.addEventListener("DOMContentLoaded", () => {
       try {
         npub = await window.nostr.getPublicKey();
         console.log("Logged in with npub:", npub);
+        
+        console.log("Attempting to connect to NostrClient");
         await nostrClient.connect();
+        console.log("NostrClient connected successfully");
+        
+        console.log("Fetching user profile");
         const profile = await nostrClient.fetchProfile(npub);
+        console.log("Profile fetched:", profile);
+        
         if (profile && profile.picture) {
+          console.log("Updating profile picture");
           elements.profilePic.innerHTML = `<img src="${profile.picture}" alt="Profile Picture">`;
+        } else {
+          console.log("No profile picture available");
         }
+        
+        console.log("Updating UI elements");
         elements.loginButton.style.display = "none";
         elements.settingsButton.style.display = "block";
         elements.restartButton.style.display = "block";
+        multiplayerButton.style.display = "block";
+        
+        console.log("Starting the game");
         game.start();
-        console.log("Added event listeners to profile pic");
+        
+        console.log("Login process completed");
       } catch (error) {
-        console.error("Error logging in:", error);
-        showFeedback("Error logging in. Please try again.");
+        console.error("Error during login process:", error);
+        showFeedback(`Error logging in: ${error.message}`);
       }
     } else {
-      alert("NIP-07 extension not found. Please install a Nostr extension.");
+      console.error("Nostr extension not found");
+      showFeedback("NIP-07 extension not found. Please install a Nostr extension.");
     }
   }
 
@@ -162,6 +199,28 @@ document.addEventListener("DOMContentLoaded", () => {
     } else {
       console.error("npub or nostrClient is not defined");
     }
+  }
+
+  function initMultiplayer() {
+    lobby = new Lobby(npub, startMultiplayerGame, returnToSinglePlayer);
+    elements.gameContainer.style.display = 'none';
+    elements.lobbyContainer.style.display = 'block';
+  }
+
+  function startMultiplayerGame(roomId) {
+    elements.lobbyContainer.style.display = 'none';
+    elements.gameContainer.style.display = 'block';
+    game = new MultiplayerGame('game-canvas', roomId, npub);
+    setupGameCallbacks();
+    game.start();
+  }
+
+  function returnToSinglePlayer() {
+    elements.lobbyContainer.style.display = 'none';
+    elements.gameContainer.style.display = 'block';
+    game = new SnakeGame("game-canvas");
+    setupGameCallbacks();
+    game.start();
   }
 
   // Utility functions

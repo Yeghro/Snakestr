@@ -1,5 +1,6 @@
 export const CONFIG = {
-  WEBSOCKET_URL: "wss://relay.damus.io",
+  WEBSOCKET_URL: "wss://nostrpub.yeghro.site",
+  GAME_WEBSOCKET_URL: "ws://localhost:3000",  // Game server WebSocket URL
   GAME_SIZE: 40,
   TICK_RATE: 15,
   CANVAS_SIZE: 400,

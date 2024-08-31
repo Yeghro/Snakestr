@@ -13,6 +13,7 @@
       <div class="action-buttons d-flex">
         <button class="btn btn-dark me-2" id="restart-button">Restart</button>
         <button class="btn btn-dark" id="settings-button" aria-label="Settings">⚙️</button>
+        <!-- The multiplayer button will be added dynamically in main.js -->
       </div>
       <div id="profile-container" class="position-relative">
         <div id="profile-pic" class="profile-pic">
@@ -23,7 +24,6 @@
           <ul id="recent-scores-list"></ul>
         </div>
       </div>
-            </div>
     </header>    
     <main>
       <div class="game-area">
@@ -42,6 +42,14 @@
           <p id="score">Score: 0</p>
           <p id="highscore">High Score: 0</p>
         </div>
+      </div>
+
+      <!-- Lobby container for multiplayer -->
+      <div id="lobby-container" style="display: none;">
+        <h2>Multiplayer Lobby</h2>
+        <div id="room-list"></div>
+        <button id="create-room" class="btn btn-dark">Create Room</button>
+        <button id="back-to-menu" class="btn btn-dark">Back to Menu</button>
       </div>
 
       <!-- Feedback message area -->
