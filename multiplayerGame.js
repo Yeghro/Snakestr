@@ -9,43 +9,68 @@ export class MultiplayerGame extends SnakeGame {
     this.playerId = playerId;
     this.otherPlayers = new Map();
     this.nostrClient = new NostrClient(CONFIG.WEBSOCKET_URL);
-    this.ws = new WebSocket(`${CONFIG.GAME_WEBSOCKET_URL}?roomId=${roomId}&playerId=${playerId}`);
-    this.setupMultiplayerEvents();
+    this.ws = null;
+    this.isConnected = false;
   }
 
-  setupMultiplayerEvents() {
-    this.ws.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      if (data.type === 'game_state') {
-        this.handlePlayerUpdate(data.playerId, data.state);
-      }
-    };
+  async setupMultiplayerEvents() {
+    return new Promise((resolve, reject) => {
+      this.ws = new WebSocket(`${CONFIG.GAME_WEBSOCKET_URL}?roomId=${this.roomId}&playerId=${this.playerId}`);
+      
+      this.ws.onopen = () => {
+        console.log(`Connected to game server for room ${this.roomId}`);
+        this.isConnected = true;
+        resolve();
+      };
 
-    this.nostrClient.on('playerJoined', this.handlePlayerJoined.bind(this));
-    this.nostrClient.on('playerLeft', this.handlePlayerLeft.bind(this));
+      this.ws.onmessage = this.handleGameStateUpdate.bind(this);
+      
+      this.ws.onclose = () => {
+        console.log(`Disconnected from game server for room ${this.roomId}`);
+        this.isConnected = false;
+      };
+
+      this.ws.onerror = (error) => {
+        console.error('WebSocket error:', error);
+        reject(error);
+      };
+
+      this.nostrClient.on('roomJoined', this.handlePlayerJoined.bind(this));
+      this.nostrClient.on('roomLeft', this.handlePlayerLeft.bind(this));
+    });
   }
 
-  start() {
-    super.start();
-    console.log(`Starting multiplayer game in room ${this.roomId}`);
+  async start() {
+    try {
+      await this.setupMultiplayerEvents();
+      super.start();
+      console.log(`Starting multiplayer game in room ${this.roomId}`);
+    } catch (error) {
+      console.error('Failed to start multiplayer game:', error);
+      // Handle the error (e.g., show an error message to the user)
+    }
   }
 
   update() {
     super.update();
-    this.sendGameState();
+    if (this.isConnected) {
+      this.sendGameState();
+    }
   }
 
   sendGameState() {
-    const state = {
-      snake: this.snake,
-      score: this.score
-    };
-    this.ws.send(JSON.stringify({
-      type: 'game_state',
-      roomId: this.roomId,
-      playerId: this.playerId,
-      state: state
-    }));
+    if (this.isConnected) {
+      const state = {
+        snake: this.snake,
+        score: this.score
+      };
+      this.ws.send(JSON.stringify({
+        type: 'game_state',
+        roomId: this.roomId,
+        playerId: this.playerId,
+        state: state
+      }));
+    }
   }
 
   handlePlayerJoined(playerId) {
@@ -101,7 +126,10 @@ export class MultiplayerGame extends SnakeGame {
 
   onGameOver(score) {
     super.onGameOver(score);
-    this.nostrClient.postHighScore(this.playerId, score);
+    if (this.ws) {
+      this.ws.close();
+    }
+    this.nostrClient.leaveRoom(this.roomId, this.playerId).catch(console.error);
     console.log(`Game over for player ${this.playerId} with score ${score}`);
   }
 }

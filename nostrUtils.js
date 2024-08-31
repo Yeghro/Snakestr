@@ -267,4 +267,52 @@ export class NostrClient {
       this.eventListeners[eventName].forEach(callback => callback(data));
     }
   }
+
+  async leaveRoom(roomId, playerPubkey) {
+    await this.ensureConnected();
+    const event = {
+      kind: 30002,
+      tags: [
+        ['e', roomId],
+        ['p', playerPubkey]
+      ],
+      content: JSON.stringify({ type: 'room_left', roomId })
+    };
+    await this.publishEvent(event);
+  }
+
+  async fetchRooms() {
+    await this.ensureConnected();
+    return new Promise((resolve, reject) => {
+      const rooms = [];
+      const reqId = Math.random().toString(36).substring(7);
+      this.ws.send(JSON.stringify(["REQ", reqId, { kinds: [30000], limit: 20 }]));
+
+      const handleMessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data[0] === "EVENT" && data[2].kind === 30000) {
+            const eventData = data[2];
+            const roomId = eventData.tags.find(tag => tag[0] === 'e')?.[1];
+            if (roomId) {
+              rooms.push({ id: roomId, creator: eventData.pubkey });
+            }
+          } else if (data[0] === "EOSE" && data[1] === reqId) {
+            this.ws.removeEventListener("message", handleMessage);
+            resolve(rooms);
+          }
+        } catch (error) {
+          console.error('Error parsing room data:', error);
+        }
+      };
+
+      this.ws.addEventListener("message", handleMessage);
+
+      // Set a timeout in case the EOSE event is not received
+      setTimeout(() => {
+        this.ws.removeEventListener("message", handleMessage);
+        resolve(rooms);
+      }, 5000);
+    });
+  }
 }
