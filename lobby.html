@@ -8,16 +8,12 @@
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-    <div class="container mt-4">
+    <div id="lobby-container" class="container mt-4">
         <h1>Multiplayer Lobby</h1>
         <div id="room-list"></div>
         <button id="create-room" class="btn btn-primary">Create Room</button>
+        <button id="refresh-room-list" class="btn btn-secondary">Refresh Room List</button>
         <button id="back-to-menu" class="btn btn-secondary">Back to Menu</button>
-    </div>
-    <div id="lobby-container" style="display: none;">
-        <h2>Multiplayer Lobby</h2>
-        <div id="room-list"></div>
-        <button id="create-room" class="btn btn-dark">Create Room</button>
     </div>
     <script type="module" src="lobby.js"></script>
 </body>

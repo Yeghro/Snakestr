@@ -210,7 +210,7 @@ export class NostrClient {
         ['p', creatorPubkey],
         ['status', 'open']
       ],
-      content: JSON.stringify({ type: 'room_created', roomId })
+      content: JSON.stringify({ type: 'room_created', roomId, status: 'open' })
     };
     await this.publishEvent(event);
     return roomId;
@@ -219,14 +219,56 @@ export class NostrClient {
   async joinRoom(roomId, playerPubkey) {
     await this.ensureConnected();
     const event = {
-      kind: 30001,
+      kind: 30000,
       tags: [
         ['e', roomId],
-        ['p', playerPubkey]
+        ['p', playerPubkey],
+        ['action', 'join']
       ],
       content: JSON.stringify({ type: 'room_joined', roomId })
     };
-    await this.publishEvent(event);
+    console.log(`Attempting to join room ${roomId}`);
+    
+    return new Promise((resolve, reject) => {
+      this.publishEvent(event)
+        .then((eventId) => {
+          console.log(`Published join event for room ${roomId}, event ID: ${eventId}`);
+          
+          const handleMessage = (messageEvent) => {
+            const data = JSON.parse(messageEvent.data);
+            if (data[0] === 'OK' && data[1] === eventId) {
+              console.log(`Received OK for join event ${eventId}`);
+              cleanup();
+              this.emit('roomJoined', roomId);
+              resolve(roomId);
+            } else if (data[0] === 'EVENT' && data[2].kind === 30000 && data[2].tags.find(tag => tag[0] === 'e' && tag[1] === roomId)) {
+              console.log(`Received room event confirmation for ${roomId}`);
+              cleanup();
+              this.emit('roomJoined', roomId);
+              resolve(roomId);
+            }
+          };
+  
+          const cleanup = () => {
+            clearTimeout(timeoutId);
+            this.ws.removeEventListener('message', handleMessage);
+          };
+  
+          this.ws.addEventListener('message', handleMessage);
+  
+          const timeoutId = setTimeout(() => {
+            console.warn(`Timeout waiting for join confirmation for event ${eventId}`);
+            cleanup();
+            // Resolve anyway, assuming the join was successful
+            this.emit('roomJoined', roomId);
+            resolve(roomId);
+          }, 30000); // Increased timeout to 30 seconds
+        })
+        .catch((error) => {
+          console.error('Error publishing join event:', error);
+          reject(new Error('Failed to join room'));
+        });
+    });
   }
 
   async publishEvent(event) {
@@ -234,7 +276,23 @@ export class NostrClient {
     event.created_at = Math.floor(Date.now() / 1000);
     event.pubkey = await window.nostr.getPublicKey();
     const signedEvent = await window.nostr.signEvent(event);
-    this.ws.send(JSON.stringify(['EVENT', signedEvent]));
+    return new Promise((resolve, reject) => {
+      this.ws.send(JSON.stringify(['EVENT', signedEvent]));
+      const handleOk = (okEvent) => {
+        const data = JSON.parse(okEvent.data);
+        if (data[0] === 'OK' && data[1] === signedEvent.id) {
+          console.log(`Received OK for event ${signedEvent.id}`);
+          this.ws.removeEventListener('message', handleOk);
+          resolve(signedEvent.id);
+        }
+      };
+      this.ws.addEventListener('message', handleOk);
+      // Set a timeout in case we don't receive the OK message
+      setTimeout(() => {
+        this.ws.removeEventListener('message', handleOk);
+        reject(new Error('Timeout waiting for event confirmation'));
+      }, 5000);
+    });
   }
   
   handleEvent(event) {
@@ -284,22 +342,50 @@ export class NostrClient {
   async fetchRooms() {
     await this.ensureConnected();
     return new Promise((resolve, reject) => {
-      const rooms = [];
+      const rooms = new Map();
       const reqId = Math.random().toString(36).substring(7);
+      console.log('Sending request for rooms...');
       this.ws.send(JSON.stringify(["REQ", reqId, { kinds: [30000], limit: 20 }]));
 
       const handleMessage = (event) => {
         try {
           const data = JSON.parse(event.data);
+          console.log('Received data:', data);
           if (data[0] === "EVENT" && data[2].kind === 30000) {
             const eventData = data[2];
-            const roomId = eventData.tags.find(tag => tag[0] === 'e')?.[1];
+            console.log('Processing event data:', eventData);
+            
+            // Try to parse the content as JSON
+            let contentData;
+            try {
+              contentData = JSON.parse(eventData.content);
+            } catch (e) {
+              console.log('Content is not valid JSON:', eventData.content);
+              contentData = { timestamp: eventData.content };
+            }
+
+            // Use the event ID as the room ID if 'e' tag is not present
+            const roomId = eventData.tags.find(tag => tag[0] === 'e')?.[1] || eventData.id;
+            const status = eventData.tags.find(tag => tag[0] === 'status')?.[1] || 'open';
+
+            console.log('Extracted room data:', { roomId, status, contentData });
+
+            // Consider all rooms as 'open' for now
             if (roomId) {
-              rooms.push({ id: roomId, creator: eventData.pubkey });
+              rooms.set(roomId, { 
+                id: roomId, 
+                creator: eventData.pubkey,
+                createdAt: eventData.created_at,
+                content: contentData
+              });
+              console.log('Added room:', rooms.get(roomId));
+            } else {
+              console.log('Skipped room due to missing ID');
             }
           } else if (data[0] === "EOSE" && data[1] === reqId) {
+            console.log('Finished fetching rooms, total:', rooms.size);
             this.ws.removeEventListener("message", handleMessage);
-            resolve(rooms);
+            resolve(Array.from(rooms.values()));
           }
         } catch (error) {
           console.error('Error parsing room data:', error);
@@ -310,9 +396,111 @@ export class NostrClient {
 
       // Set a timeout in case the EOSE event is not received
       setTimeout(() => {
+        console.log('Timeout reached, resolving with current rooms:', Array.from(rooms.values()));
         this.ws.removeEventListener("message", handleMessage);
-        resolve(rooms);
+        resolve(Array.from(rooms.values()));
       }, 5000);
+    });
+  }
+
+  async fetchRoomDetails(roomId) {
+    await this.ensureConnected();
+    return new Promise((resolve, reject) => {
+      const reqId = Math.random().toString(36).substring(7);
+      console.log(`Fetching details for room ${roomId}`);
+      this.ws.send(JSON.stringify(["REQ", reqId, { 
+        kinds: [30000],
+        "#e": [roomId],
+        limit: 1
+      }]));
+  
+      const handleMessage = (event) => {
+        const data = JSON.parse(event.data);
+        if (data[0] === "EVENT" && data[1] === reqId) {
+          const roomEvent = data[2];
+          console.log(`Room details received for ${roomId}:`, roomEvent);
+          this.ws.removeEventListener("message", handleMessage);
+          resolve({
+            id: roomId,
+            creator: roomEvent.pubkey,
+            createdAt: roomEvent.created_at,
+            content: JSON.parse(roomEvent.content)
+          });
+        } else if (data[0] === "EOSE" && data[1] === reqId) {
+          console.log(`No details found for room ${roomId}`);
+          this.ws.removeEventListener("message", handleMessage);
+          reject(new Error("Room not found"));
+        }
+      };
+  
+      this.ws.addEventListener("message", handleMessage);
+  
+      // Set a timeout in case we don't receive a response
+      setTimeout(() => {
+        this.ws.removeEventListener("message", handleMessage);
+        reject(new Error("Timeout fetching room details"));
+      }, 5000);
+    });
+  }
+
+  async sendMessage(roomId, message) {
+    await this.ensureConnected();
+    const event = {
+      kind: 30000, // You might want to use a different kind for messages
+      tags: [
+        ['e', roomId],
+        ['p', await window.nostr.getPublicKey()]
+      ],
+      content: JSON.stringify(message)
+    };
+    return this.publishEvent(event);
+  }
+
+  
+  async fetchRoomPlayers(roomId) {
+    await this.ensureConnected();
+    return new Promise((resolve) => {
+      const reqId = Math.random().toString(36).substring(7);
+      console.log(`Fetching players for room ${roomId}`);
+      this.ws.send(JSON.stringify(["REQ", reqId, { 
+        kinds: [30000],
+        "#e": [roomId],
+        since: Math.floor(Date.now() / 1000) - 3600 // Look for events in the last hour
+      }]));
+  
+      const players = new Set();
+      const readyPlayers = new Set();
+      const handleMessage = (event) => {
+        const data = JSON.parse(event.data);
+        if (data[0] === "EVENT" && data[1] === reqId) {
+          const playerEvent = data[2];
+          const playerPubkey = playerEvent.pubkey;
+          const content = JSON.parse(playerEvent.content);
+          if (content.type === 'room_joined') {
+            players.add(playerPubkey);
+          } else if (content.type === 'player_ready') {
+            readyPlayers.add(playerPubkey);
+          }
+        } else if (data[0] === "EOSE" && data[1] === reqId) {
+          console.log(`Players found for room ${roomId}:`, Array.from(players));
+          console.log(`Ready players for room ${roomId}:`, Array.from(readyPlayers));
+          cleanup();
+          resolve({ players: Array.from(players), readyPlayers: Array.from(readyPlayers) });
+        }
+      };
+        
+      const cleanup = () => {
+        clearTimeout(timeoutId);
+        this.ws.removeEventListener("message", handleMessage);
+      };
+  
+      this.ws.addEventListener("message", handleMessage);
+  
+      const timeoutId = setTimeout(() => {
+        console.warn(`Timeout reached while fetching players for room ${roomId}`);
+        cleanup();
+        resolve({ players: Array.from(players), readyPlayers: Array.from(readyPlayers) });
+      }, 15000); // Increased timeout to 15 seconds
     });
   }
 }
